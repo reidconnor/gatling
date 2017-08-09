@@ -15,8 +15,9 @@
  */
 package io.gatling.http.action.async.ws
 
-import scala.collection.mutable
+import java.nio.charset.StandardCharsets
 
+import scala.collection.mutable
 import io.gatling.commons.stats.{ KO, OK }
 import io.gatling.commons.util.ClockSingleton.nowMillis
 import io.gatling.commons.validation.Success
@@ -24,7 +25,6 @@ import io.gatling.core.stats.StatsEngine
 import io.gatling.http.action.async._
 import io.gatling.http.ahc.HttpEngine
 import io.gatling.http.check.async._
-
 import akka.actor.Props
 import org.asynchttpclient.ws.WebSocket
 
@@ -174,7 +174,32 @@ class WsActor(wsName: String, statsEngine: StatsEngine, httpEngine: HttpEngine) 
         }
 
       case OnByteMessage(message, time) =>
-        logger.debug(s"Received byte message on websocket '$wsName':$message. Beware, byte message checks are currently not supported")
+        logger.debug(s"Received byte message on websocket '$wsName':$message. Experimental")
+
+        tx.check.foreach { check =>
+
+          implicit val cache = mutable.Map.empty[Any, Any]
+
+          // Cast message byte array to string
+          val messageString = new String(message, StandardCharsets.UTF_8.name())
+
+          check.check(messageString, tx.session) match {
+            case Success(result) =>
+              val results = result :: tx.pendingCheckSuccesses
+
+              check.expectation match {
+                case UntilCount(count) if count == results.length =>
+                  succeedPendingCheck(tx, results, goToOpenState(webSocket))
+
+                case _ =>
+                  // let's pile up
+                  val newTx = tx.copy(pendingCheckSuccesses = results)
+                  context.become(openState(webSocket, newTx))
+              }
+
+            case _ =>
+          }
+        }
 
       case Reconciliate(requestName, next, session) =>
         logger.debug(s"Reconciliating websocket '$wsName'")
